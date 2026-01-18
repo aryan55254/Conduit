@@ -1,0 +1,21 @@
+{
+  "name": "conduit",
+  "version": "1.0.0",
+  "description": "Conduit is a distributed SQL router built with Node.js and TypeScript. It intercepts PostgreSQL wire protocol packets and parses SQL ASTs to transparently route queries across sharded database instances based on consistent hashing.",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aryan55254/Conduit.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/aryan55254/Conduit/issues"
+  },
+  "homepage": "https://github.com/aryan55254/Conduit#readme"
+}
