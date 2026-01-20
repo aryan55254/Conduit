@@ -17,5 +17,11 @@
   "bugs": {
     "url": "https://github.com/aryan55254/Conduit/issues"
   },
-  "homepage": "https://github.com/aryan55254/Conduit#readme"
+  "homepage": "https://github.com/aryan55254/Conduit#readme",
+  "dependencies": {
+    "net": "^1.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.9"
+  }
 }
