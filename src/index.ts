@@ -1,85 +1,40 @@
-//Layer 1 + 5 , entry point to the server and connection to a single db shard
+//Layer 1, entry point to the server
 /* 
+the layer currently directly fires to to the layer 5 proxy via the ProxySession function this will change when layers are added in between
  dumb async pipe in between client and a backend shard and does a one to one connection , it can do straight-forward db transactions for now
 */
-import net from 'net';
+import net, { Socket } from 'net';
+import ProxySession from "./proxy_layer"
 
-const PORT = 5432;
-const SHARD_PORT = 7070;
+interface ServerConfig {
+    listenPort: number;
+    shardPort: number;
+    shardHost?: string
+}
+class ConduitServer {
+    private server: net.Server;
 
-const server = net.createServer((clientSocket) => {
-
-    /*
-    we connect socket to a client and we pause the client connection until the we connect to the cb on other side 
-    */
-    const remoteAddr = `${clientSocket.remoteAddress}:${clientSocket.remotePort}`;
-    console.log(`New Client [${remoteAddr}] Connected`);
-
-    const backendSocket = new net.Socket();
-    const backendAddr = `${backendSocket.remoteAddress}:${backendSocket.remotePort}`;
-
-    clientSocket.pause();
-
-    backendSocket.connect(SHARD_PORT, 'localhost', () => {
-        console.log(`Connected to The Postgres Shard : [${backendAddr}]`);
-        clientSocket.resume();
-    });
-
-    /* 
-    we write data recieved from the client directly to the backend socket and if the backend socket is overwhelmed we stop intaking new data  by pausing the client socket until backend socket is drained and we do vice versa for client socket for giving responses to the client about the database
-    */
-    clientSocket.on('data', (chunk: Buffer) => {
-        const flushed = backendSocket.write(chunk);
-        if (!flushed) {
-            console.log("Backend congested, pausing client...");
-            clientSocket.pause();
-        }
-    });
-
-    backendSocket.on('drain', () => {
-        console.log("Backend drained, resuming client...");
-        clientSocket.resume();
-    })
-
-    backendSocket.on('data', (chunks: Buffer) => {
-        const flushed = clientSocket.write(chunks);
-        if (!flushed) {
-            console.log("client socket congested, pausing connection to postgres shard...");
-            backendSocket.pause();
-        }
-    })
-
-    clientSocket.on('drain', () => {
-        console.log("Client Side Socket drained, resuming connection to postgres shard...");
-        backendSocket.resume();
-    })
-
-    /*
-    cleanup and error handling
-    */
-
-    clientSocket.on('close', () => {
-        console.log(`Client [${remoteAddr}] disconnected`);
-        backendSocket.end();
-    })
-
-    backendSocket.on('close', () => {
-        clientSocket.end();
-    });
-
-    clientSocket.on('error', (err) => {
-        console.error(`Client Error: ${err.message}`);
-        backendSocket.destroy();
-    });
-
-    backendSocket.on('error', (err) => {
-        console.error(`Backend Error: ${err.message}`);
-        clientSocket.destroy();
-    });
-
+    //constructor that initiazes a server instance and connects the proxy to the server
+    constructor(private config: ServerConfig) {
+        this.server = net.createServer((socket) => this.handleConnection(socket));
+    }
+    //function to open a one to one connection to db shard
+    private handleConnection(clientSocket: Socket) {
+        new ProxySession(clientSocket, this.config.shardPort, this.config.shardHost);
+    }
+    //function that starts the server and server starts listening this can(leaning towards should) happen after the server instance is made and shard is connected
+    public start() {
+        this.server.listen(this.config.listenPort, () => {
+            console.log(`Conduit Entry Point running on port ${this.config.listenPort}`);
+            console.log(`Forwarding to ${this.config.shardHost || 'localhost'}:${this.config.shardPort}`);
+        });
+    }
+}
+//initializing server
+const server = new ConduitServer({
+    listenPort: 5432,
+    shardPort: 7070,
+    shardHost: 'localhost'
 });
 
-server.listen(PORT, () => {
-    console.log(`Conduit Entry Point running on port ${PORT}`);
-    console.log(`Forwarding to localhost:${SHARD_PORT}`);
-});
+server.start();
