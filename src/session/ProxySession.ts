@@ -1,12 +1,14 @@
-/*
-the layer currently directly fires to to the layer 1 and gets info directly from layer 1 the getting info from layer 1 directly will chaange as layers will be added but return to layer one will remain staright forward
- dumb async pipe in between client and a backend shard and does a one to one connection , it can do straight-forward db transactions for now
-*/
-
+/**
+ * Proxy Session Manager
+ * * Currently acts as a transparent asynchronous pipe between the client and a 
+ * specific database shard. It handles backpressure (pause/resume) to ensure 
+ * memory stability and manages the lifecycle of both sockets.
+ * this and /server/ConduitServer.ts together form the proxy server that talks to the clients and db shards
+ */
 import net, { Socket } from 'net';
-//sets up a one to one porxy session to a db shard 
+
 class ProxySession {
-    private backendSocket: Socket;
+    private backendSocket: net.Socket;
     private readonly remoteAddr: string;
 
     constructor(
@@ -18,24 +20,36 @@ class ProxySession {
         this.remoteAddr = `${clientSocket.remoteAddress}:${clientSocket.remotePort}`;
         this.initialize();
     }
-    //after new client conencts , pauses that connection and connects to the shards and handles lifecycle events
+
+    /**
+     * Pauses the client stream to prevent data accumulation in memory 
+     * while the connection to the backend shard is being established.
+     */
     private initialize() {
-        console.log(`[${this.remoteAddr}] New Client Connected`);
+        console.log(`[${this.remoteAddr}] Client session initiated`);
         this.clientSocket.pause();
         this.setupLifecycleHooks();
-        this.connectToShards();
+        this.connectToShard();
     }
-    //connects to shard safely , and handles backpressure both ways 
-    private connectToShards() {
+
+    private connectToShard() {
         this.backendSocket.connect(this.shardPort, this.shardHost, () => {
             const backendAddr = `${this.backendSocket.remoteAddress}:${this.backendSocket.remotePort}`;
-            console.log(`[${this.remoteAddr}] -> Connected to Postgres Shard [${backendAddr}]`);
-            this.clientSocket.resume(); //because initialize function pauses the client conenction for shard conenction to happen safely
+            console.log(`[${this.remoteAddr}] Connected to Backend Shard [${backendAddr}]`);
+
+            // Resume flow once the backend is ready to receive
+            this.clientSocket.resume();
+
+            // Establish full-duplex piping
             this.setupOneWayPipe(this.clientSocket, this.backendSocket, "Client -> Backend");
             this.setupOneWayPipe(this.backendSocket, this.clientSocket, "Backend -> Client");
-        })
+        });
     }
-    //handles backpressure 
+
+    /**
+     * Implements basic backpressure handling. If the destination's write buffer 
+     * is full, the source is paused until the 'drain' event is emitted.
+     */
     private setupOneWayPipe(source: Socket, destination: Socket, label: string) {
         source.on('data', (chunk: Buffer) => {
             const flushed = destination.write(chunk);
@@ -43,23 +57,25 @@ class ProxySession {
                 source.pause();
             }
         });
+
         destination.on('drain', () => {
             source.resume();
-        })
+        });
     }
-    //handles lifecycle events 
+
     private setupLifecycleHooks() {
+        // Clean termination: if one side closes, end the other.
         this.clientSocket.on('close', () => {
             console.log(`[${this.remoteAddr}] Client disconnected`);
             this.backendSocket.end();
         });
 
         this.backendSocket.on('close', () => {
-            console.log(`[${this.remoteAddr}] Backend closed connection`);
+            console.log(`[${this.remoteAddr}] Backend shard closed connection`);
             this.clientSocket.end();
         });
 
-        // --- Error Handling ---
+        // Error handling: destroy sockets to prevent memory leaks
         this.clientSocket.on('error', (err) => {
             console.error(`[${this.remoteAddr}] Client Error: ${err.message}`);
             this.backendSocket.destroy();
