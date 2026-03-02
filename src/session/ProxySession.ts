@@ -1,20 +1,24 @@
 /**
- * Proxy Session Manager
- * * Currently acts as a transparent asynchronous pipe between the client and a 
- * specific database shard. It handles backpressure (pause/resume) to ensure 
- * memory stability and manages the lifecycle of both sockets.
- * this and /server/ConduitServer.ts together form the proxy server that talks to the clients and db shards
- */
+
+Client Resource Manager
+
+* This currently conencts the shard connections to the client connections 
+* it handles backpressure of memory from the client to shard and vice versa via memory gaurd 
+* at the moment this is a sticky socket assignment but will move on to a multiplexed once the protocol parser is enabled
+
+ **/
 import net, { Socket } from 'net';
+import { ShardConnectionPool } from '../server/ShardConnectionPool';
 
 class ProxySession {
-    private backendSocket: net.Socket;
+    private backendSocket: net.Socket | null = null;
     private readonly remoteAddr: string;
+    private activeRequests = 0;
+    private targetPool: ShardConnectionPool | undefined;
 
     constructor(
         private readonly clientSocket: Socket,
-        private readonly shardPort: number,
-        private readonly shardHost: string = 'localhost'
+        private readonly shardPools: Map<string, ShardConnectionPool>
     ) {
         this.backendSocket = new net.Socket();
         this.remoteAddr = `${clientSocket.remoteAddress}:${clientSocket.remotePort}`;
@@ -29,21 +33,36 @@ class ProxySession {
         console.log(`[${this.remoteAddr}] Client session initiated`);
         this.clientSocket.pause();
         this.setupLifecycleHooks();
-        this.connectToShard();
+        this.acquireandpipe();
     }
 
-    private connectToShard() {
-        this.backendSocket.connect(this.shardPort, this.shardHost, () => {
-            const backendAddr = `${this.backendSocket.remoteAddress}:${this.backendSocket.remotePort}`;
-            console.log(`[${this.remoteAddr}] Connected to Backend Shard [${backendAddr}]`);
+    private async acquireandpipe() {
+        // For now, we hardcode 'shard_01'. Later, our SQL parser will choose this.
+        this.targetPool = this.shardPools.get('shard_01');
 
-            // Resume flow once the backend is ready to receive
+        if (!this.targetPool) {
+            console.error("Shard pool not found!");
+            this.clientSocket.destroy();
+            return;
+        }
+
+        try {
+            // Borrow a socket from the Global Gate
+            const socket = await this.targetPool.acquire();
+            this.backendSocket = socket;
+            this.activeRequests++;
+
+            console.log(`[${this.remoteAddr}] Acquired backend socket from pool`);
+
+            // Now that we have the socket, resume the client and start piping
             this.clientSocket.resume();
-
-            // Establish full-duplex piping
             this.setupOneWayPipe(this.clientSocket, this.backendSocket, "Client -> Backend");
             this.setupOneWayPipe(this.backendSocket, this.clientSocket, "Backend -> Client");
-        });
+
+        } catch (err) {
+            console.error("Failed to acquire socket:", err);
+            this.clientSocket.destroy();
+        }
     }
 
     /**
@@ -62,30 +81,24 @@ class ProxySession {
             source.resume();
         });
     }
-
     private setupLifecycleHooks() {
-        // Clean termination: if one side closes, end the other.
         this.clientSocket.on('close', () => {
             console.log(`[${this.remoteAddr}] Client disconnected`);
-            this.backendSocket.end();
+
+            // Return the socket to the pool so others can use it
+            if (this.backendSocket && this.targetPool) {
+                this.targetPool.release(this.backendSocket);
+                this.activeRequests--;
+            }
         });
 
-        this.backendSocket.on('close', () => {
-            console.log(`[${this.remoteAddr}] Backend shard closed connection`);
-            this.clientSocket.end();
-        });
-
-        // Error handling: destroy sockets to prevent memory leaks
+        // Handle backend errors/closes by cleaning up the client
         this.clientSocket.on('error', (err) => {
-            console.error(`[${this.remoteAddr}] Client Error: ${err.message}`);
-            this.backendSocket.destroy();
-        });
-
-        this.backendSocket.on('error', (err) => {
-            console.error(`[${this.remoteAddr}] Backend Error: ${err.message}`);
             this.clientSocket.destroy();
         });
     }
 }
 
 export default ProxySession;
+
+
