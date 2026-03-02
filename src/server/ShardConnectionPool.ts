@@ -1,3 +1,4 @@
+//this is a global invariant this provides per shard connection pooling for conduit this opens up 10 conenctions per shard and keeps them always hot and if there are specific socket errors we still maintain a stable 10 connection 
 import { Socket } from 'net';
 
 export class ShardConnectionPool {
@@ -36,7 +37,7 @@ export class ShardConnectionPool {
         this.availableConnections = this.availableConnections.filter(s => s !== socket);
 
         socket.destroy();
-
+//self healing always maintains 10 connections to the shard
         if (this.connections.length < 10) {
             this.add_socket();
         }
@@ -49,6 +50,7 @@ export class ShardConnectionPool {
         }
     }
 
+    // takes a connection from the available ones if no one is available the asker is assed to the requestqueue
     public async acquire(): Promise<Socket> {
         if (this.availableConnections.length > 0) {
             return this.availableConnections.pop()!;
@@ -58,6 +60,7 @@ export class ShardConnectionPool {
         }
     }
 
+    // it is when the connection is finished being used not other client can use it a client from th requestqueue is prioritised
     public async release(socket: Socket) {
         if (this.requestQueue.length > 0) {
             const nextRequest = this.requestQueue.shift()!;
