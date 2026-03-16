@@ -9,7 +9,7 @@
 * 
  **/
 import net, { Socket } from 'net';
-import ProxySession from "../session/ProxySession";
+import ProxySession from "../server/ClientsConnections";
 import { ShardConnectionPool } from "./ShardConnectionPool"
 
 interface ShardConfig {

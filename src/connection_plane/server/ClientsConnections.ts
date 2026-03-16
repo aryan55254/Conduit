@@ -8,7 +8,9 @@ Client Resource Manager
 
  **/
 import net, { Socket } from 'net';
-import { ShardConnectionPool } from '../server/ShardConnectionPool';
+import { ShardConnectionPool } from './ShardConnectionPool';
+import { readFileSync } from 'fs';
+import { TLSSocket } from 'tls';
 
 class ProxySession {
     private backendSocket: net.Socket | null = null;
@@ -17,23 +19,41 @@ class ProxySession {
     private targetPool: ShardConnectionPool | undefined;
 
     constructor(
-        private readonly clientSocket: Socket,
+        private clientSocket: Socket,
         private readonly shardPools: Map<string, ShardConnectionPool>
     ) {
-        this.backendSocket = new net.Socket();
         this.remoteAddr = `${clientSocket.remoteAddress}:${clientSocket.remotePort}`;
         this.initialize();
+    }
+
+    private handleSSLrequest(socket: Socket) {
+
+        socket.write('S');
+        const secureSocket = new TLSSocket(socket, {
+            isServer: true,
+            key: readFileSync('server-key.pem'),
+            cert: readFileSync('server-cert.pem'),
+            requestCert: true
+        });
+
+        secureSocket.on('secureConnect', () => {
+            console.log("TLS Tunnel Established!");
+            this.clientSocket = secureSocket;
+            this.acquireandpipe();
+        });
+
     }
 
     /**
      * Pauses the client stream to prevent data accumulation in memory 
      * while the connection to the backend shard is being established.
      */
+
     private initialize() {
         console.log(`[${this.remoteAddr}] Client session initiated`);
         this.clientSocket.pause();
         this.setupLifecycleHooks();
-        this.acquireandpipe();
+
     }
 
     private async acquireandpipe() {
@@ -82,6 +102,19 @@ class ProxySession {
         });
     }
     private setupLifecycleHooks() {
+
+        this.clientSocket.once('data', (chunk) => {
+            // Check if the first 8 bytes are the SSLRequest
+            if (chunk.length === 8 && chunk.readInt32BE(0) === 8 && chunk.readInt32BE(4) === 80877103) {
+                this.handleSSLrequest(this.clientSocket);
+            } else {
+                // It's a StartupMessage (No SSL), go straight to auth/decoding
+                this.clientSocket.pause();
+                this.clientSocket.unshift(chunk); // Put the data back for the decoder
+                this.acquireandpipe();
+            }
+        });
+
         this.clientSocket.on('close', () => {
             console.log(`[${this.remoteAddr}] Client disconnected`);
 

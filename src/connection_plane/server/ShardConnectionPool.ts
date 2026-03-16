@@ -1,5 +1,7 @@
 //this is a global invariant this provides per shard connection pooling for conduit this opens up 10 conenctions per shard and keeps them always hot and if there are specific socket errors we still maintain a stable 10 connection 
 import { Socket } from 'net';
+import { readFileSync } from 'fs';
+import { TLSSocket } from 'tls';
 
 export class ShardConnectionPool {
     private connections: Socket[] = [];
@@ -10,23 +12,43 @@ export class ShardConnectionPool {
         this.initializePool();
     }
 
+    private shardsslauth(socket: Socket) {
+        const buf = Buffer.from("0000000804d2162f", "hex");
+        socket.write(buf);
+        socket.once("data", (chunk: Buffer) => {
+            if (chunk[0] == 0x53) {
+                const SecureSocket = new TLSSocket(socket, {
+                    isServer: false,
+                    key: readFileSync('server-key.pem'),
+                    cert: readFileSync('server-cert.pem'),
+                    requestCert: true
+                });
+                SecureSocket.on('secureConnect',
+                    () => {
+                        console.log("TLS Tunnel Established!");
+                        this.connections.push(SecureSocket);
+                        this.release(SecureSocket);
+                    }
+                )
+                SecureSocket.on('error', (err) => this.handleDeadSocket(SecureSocket));
+
+                socket.on('close', () => {
+                    this.handleDeadSocket(socket);
+                });
+            }
+
+        })
+    }
+
     private add_socket() {
         const socket = new Socket();
 
         socket.on('connect', () => {
-            console.log(`[Pool] Shard connection established`);
-            this.connections.push(socket);
-            this.release(socket);
+
+            this.shardsslauth(socket);
+
         });
 
-        socket.on('error', (err) => {
-            console.error(`[Pool] Socket Error: ${err.message}`);
-            this.handleDeadSocket(socket);
-        });
-
-        socket.on('close', () => {
-            this.handleDeadSocket(socket);
-        });
 
         socket.connect(this.config.port, this.config.host);
     }
@@ -37,7 +59,7 @@ export class ShardConnectionPool {
         this.availableConnections = this.availableConnections.filter(s => s !== socket);
 
         socket.destroy();
-//self healing always maintains 10 connections to the shard
+        //self healing always maintains 10 connections to the shard
         if (this.connections.length < 10) {
             this.add_socket();
         }
