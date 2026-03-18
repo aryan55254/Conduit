@@ -1,4 +1,4 @@
-//this is a global invariant this provides per shard connection pooling for conduit this opens up 10 conenctions per shard and keeps them always hot and if there are specific socket errors we still maintain a stable 10 connection 
+//this is a global invariant this provides per shard connection pooling for conduit this opens up 10 conenctions per shard and keeps them always hot and if there are specific socket errors we still maintain a stable 10 connection  , also supports pgwire auth via the ssl method
 import { Socket } from 'net';
 import { readFileSync } from 'fs';
 import { TLSSocket } from 'tls';
@@ -11,7 +11,9 @@ export class ShardConnectionPool {
     constructor(private config: { host: string; port: number }) {
         this.initializePool();
     }
-
+    /*
+    this function sends a conection request to shard as a client for an pg wire auth and forms a secure connection after authentication
+    */
     private shardsslauth(socket: Socket) {
         const buf = Buffer.from("0000000804d2162f", "hex");
         socket.write(buf);
