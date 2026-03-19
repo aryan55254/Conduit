@@ -8,8 +8,12 @@
  */
 import { Buffer } from "buffer";
 import { FrontendMessageCode, BackendMessageCode } from "./pg_wire_message_types";
-import { buffer } from "stream/consumers";
 
+export interface DecodedMessage {
+    type: FrontendMessageCode | BackendMessageCode | number;
+    payload: Buffer;
+    raw: Buffer;
+}
 
 class ProtocolDecoder {
 
@@ -24,41 +28,52 @@ class ProtocolDecoder {
      */
     public parse(chunk: Buffer) {
         this.accumulator = Buffer.concat([this.accumulator, chunk]);
-        const messages: Buffer[] = [];
+        const messages: DecodedMessage[] = [];
 
         while (this.accumulator.length >= 4) {
-            const messagetype = this.accumulator[0];
-            let typebyte: FrontendMessageCode | BackendMessageCode;
+            let totalSize: number;
 
-            if (this.mode === 'frontend') {
-                // Treat the byte as a Client-to-Proxy message 
-                typebyte = messagetype as FrontendMessageCode;
+            if (!this.ishandshakecomplete) {
+                // No Type byte. Length is at Index 0.
+                totalSize = this.accumulator.readInt32BE(0);
             } else {
-                // Treat the byte as a Shard-to-Proxy message
-                typebyte = messagetype as BackendMessageCode;
+
+                if (this.accumulator.length < 5) break;
+                totalSize = 1 + this.accumulator.readInt32BE(1);
+
             }
 
-            if (messagetype) {
-                this.ishandshakecomplete = true
+            if (this.accumulator.length < totalSize) {
+                break; // Wait for the next TCP 'data' event
             }
 
-            let message_length: number = 1 + this.accumulator.readInt32BE(1);
+            // EXTRACTION
+            const rawMessage = this.accumulator.subarray(0, totalSize);
 
-            if (this.accumulator.length < message_length) {
-                break;
-            }
+            // MAP TO ENUMS
+            const typeByte = this.ishandshakecomplete ? rawMessage[0] : 0x00; // 0x00 for Startup
+            const type = this.mode === 'frontend'
+                ? typeByte as FrontendMessageCode
+                : typeByte as BackendMessageCode;
 
-            if (this.accumulator.length >= message_length) {
-                const full_message: Buffer = this.accumulator.subarray(0, message_length);
-                this.accumulator = this.accumulator.subarray(message_length);
+            messages.push({
+                type: type,
+                payload: this.ishandshakecomplete ? rawMessage.subarray(5) : rawMessage.subarray(4),
+                raw: rawMessage
+            });
 
-                //we need to return this shit to next thingy with return ig 
-                messages.push(full_message);
+            // CLEANUP & STATE UPDATE
+            this.accumulator = this.accumulator.subarray(totalSize);
+
+            // The very first message handled is ALWAYS the Startup.
+            // Everything after MUST be a standard message.
+            if (!this.ishandshakecomplete) {
+                this.ishandshakecomplete = true;
             }
             // the loop continue 
-            return messages;
 
         }
+        return messages;
     }
 
     public reset() {
