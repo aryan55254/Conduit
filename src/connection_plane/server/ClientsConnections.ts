@@ -5,6 +5,7 @@ Client Resource Manager
 * This currently conencts the shard connections to the client connections 
 * it handles backpressure of memory from the client to shard and vice versa via memory gaurd 
 * at the moment this is a sticky socket assignment but will move on to a multiplexed once the protocol parser is enabled
+* it handles the pg wire auth via the ssl method
 
  **/
 import net, { Socket } from 'net';
