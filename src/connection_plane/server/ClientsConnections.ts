@@ -12,12 +12,16 @@ import net, { Socket } from 'net';
 import { ShardConnectionPool } from './ShardConnectionPool';
 import { readFileSync } from 'fs';
 import { TLSSocket } from 'tls';
+import { ProtocolDecoder } from '../protocol/protocol_decoder'
+import { BackendMessageCode } from '../protocol/pg_wire_message_types';
 
 class ProxySession {
     private backendSocket: net.Socket | null = null;
     private readonly remoteAddr: string;
     private activeRequests = 0;
     private targetPool: ShardConnectionPool | undefined;
+    private clientdecoder = new ProtocolDecoder('frontend');
+    private sharddecoder = new ProtocolDecoder('backend');
 
     constructor(
         private clientSocket: Socket,
@@ -40,6 +44,7 @@ class ProxySession {
         secureSocket.on('secureConnect', () => {
             console.log("TLS Tunnel Established!");
             this.clientSocket = secureSocket;
+            this.setupfrontenddecodepiping(this.clientSocket);
             this.acquireandpipe();
         });
 
@@ -69,6 +74,7 @@ class ProxySession {
 
         try {
             // Borrow a socket from the Global Gate
+            this.clientSocket.pause();
             const socket = await this.targetPool.acquire();
             this.backendSocket = socket;
             this.activeRequests++;
@@ -77,8 +83,7 @@ class ProxySession {
 
             // Now that we have the socket, resume the client and start piping
             this.clientSocket.resume();
-            this.setupOneWayPipe(this.clientSocket, this.backendSocket, "Client -> Backend");
-            this.setupOneWayPipe(this.backendSocket, this.clientSocket, "Backend -> Client");
+            this.setupbackenddecodepiping(this.backendSocket, this.clientSocket);
 
         } catch (err) {
             console.error("Failed to acquire socket:", err);
@@ -86,22 +91,66 @@ class ProxySession {
         }
     }
 
-    /**
-     * Implements basic backpressure handling. If the destination's write buffer 
-     * is full, the source is paused until the 'drain' event is emitted.
-     */
-    private setupOneWayPipe(source: Socket, destination: Socket, label: string) {
-        source.on('data', (chunk: Buffer) => {
-            const flushed = destination.write(chunk);
-            if (!flushed) {
-                source.pause();
+    private detachBackend() {
+        if (this.backendSocket && this.targetPool) {
+            this.backendSocket.removeAllListeners('data');
+            this.backendSocket.removeAllListeners('drain');
+            this.targetPool.release(this.backendSocket);
+            this.backendSocket = null;
+        }
+    }
+
+    //decoding pipeline tht sends the messages to the ptotocl decoder and does packpressure handling when no message s parsed out 
+
+    private async setupbackenddecodepiping(backendSocket: Socket, clientSocket: Socket) {
+
+        this.backendSocket?.on('data', (chunk: Buffer) => {
+            const messages = this.sharddecoder.parse(chunk);
+            for (const msg of messages) {
+
+                const flushed = this.clientSocket?.write(msg.raw);
+                if (!flushed) {
+                    this.clientSocket.pause();
+                    this.backendSocket?.once('drain', () => this.clientSocket.resume());
+                }
+
+                if (msg.type === BackendMessageCode.ReadyForQuery) {
+                    const status = msg.payload[0];
+
+                    if (status === 73) { // 73 is 'I' for Idle
+                        console.log(`[${this.remoteAddr}] Shard Idle. Releasing to pool.`);
+                        this.detachBackend();
+                    }
+                }
             }
         });
 
-        destination.on('drain', () => {
-            source.resume();
+    }
+
+    private isFrontendPipingSetup = false;
+
+    private setupfrontenddecodepiping(clientSocket: Socket) {
+        if (this.isFrontendPipingSetup) return; // Prevent duplicate listeners
+        this.isFrontendPipingSetup = true;
+
+        this.clientSocket.on('data', async (chunk: Buffer) => {
+            const messages = this.clientdecoder.parse(chunk);
+            for (const msg of messages) {
+                if (!this.backendSocket) {
+                    // If we need a shard, wait for it
+
+                    await this.acquireandpipe();
+                }
+
+                const flushed = this.backendSocket?.write(msg.raw);
+                if (!flushed) {
+                    this.clientSocket.pause();
+                    this.backendSocket?.once('drain', () => this.clientSocket.resume());
+                }
+            }
         });
     }
+
     private setupLifecycleHooks() {
 
         this.clientSocket.once('data', (chunk) => {
