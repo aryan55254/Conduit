@@ -15,7 +15,7 @@ export interface DecodedMessage {
     raw: Buffer;
 }
 
-class ProtocolDecoder {
+export class ProtocolDecoder {
 
     constructor(private mode: 'frontend' | 'backend') { }
 
