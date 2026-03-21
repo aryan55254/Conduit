@@ -5,3 +5,5 @@ Conduit is a Proxy SQL router which intercepts PostgreSQL wire protocol packets 
 Conduit MVP follows the following architecture :
 
 ![ARCHITECTURE](public/architecture.png)
+
+[Checkout the Architecture Details Here](./architecture.md)
